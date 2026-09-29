@@ -1,0 +1,5 @@
+build/
+src/bin/
+src/obj/
+*.log
+TyranoPatcher.ini

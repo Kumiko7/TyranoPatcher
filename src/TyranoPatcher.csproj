@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>TyranoPatcher</AssemblyName>
+    <RootNamespace>TyranoPatcher</RootNamespace>
+    <Version>1.0.0</Version>
+    <Product>TyranoPatcher</Product>
+    <Description>Launches TyranoScript games with transition skip and fast skip patches.</Description>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Windows.Forms" />
+    <EmbeddedResource Include="patch.js" LogicalName="patch.js" />
+  </ItemGroup>
+
+</Project>

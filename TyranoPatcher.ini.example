@@ -1,0 +1,33 @@
+; TyranoPatcher settings. Optional: rename to TyranoPatcher.ini and put it next to TyranoPatcher.exe.
+; Everything below shows the default value.
+
+; Game executable to start. Leave empty to auto-detect the game .exe in the same folder.
+game =
+
+; Click / Enter during a fade, [wait], character appearance, scene transition... finishes it instantly.
+transition_skip = 1
+
+; Makes the in-game skip mode collapse every wait and effect to ~0ms.
+fast_skip = 1
+
+; While skipping, don't play one-shot sound effects (the engine already does this on phones).
+skip_sound_effects = 1
+
+; Rollback: go back to the previous line of text (press repeatedly to go further back).
+rollback = 1
+
+; Keys that roll back, comma separated: Backspace, PageUp, Up, Left, Home, Delete, Insert, End,
+; PageDown, Down, Right, Escape, Tab, Space, Enter, F1-F12, a letter or digit, or a numeric key code.
+rollback_keys = Backspace, PageUp
+
+; The mouse's "back" side button also rolls back.
+rollback_mouse_back = 1
+
+; How many lines back you can go.
+rollback_history = 300
+
+; Show the small "TyranoPatcher ... active" note in the corner for a few seconds at startup.
+toast = 1
+
+; Extra command line arguments passed to the game.
+args =
