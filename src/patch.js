@@ -27,7 +27,7 @@
   if (CFG.rollbackMouseBack === undefined) CFG.rollbackMouseBack = true;
   if (!(CFG.rollbackHistory > 0)) CFG.rollbackHistory = 300;
 
-  var P = W.__tyranoPatcher = { version: '1.1.1', config: CFG, stats: { flushes: 0, skipFlushes: 0, rollbacks: 0 } };
+  var P = W.__tyranoPatcher = { version: '1.1.1', config: CFG, stats: { flushes: 0, skipFlushes: 0, rollbacks: 0, clockSkips: 0 } };
 
   var nativeSetTimeout = W.setTimeout;
   var nativeClearTimeout = W.clearTimeout;
@@ -48,8 +48,75 @@
   // Tags that run user JavaScript; timers they create are the game's own business.
   var SCRIPT_TAGS = { iscript: 1, endscript: 1, eval: 1, emb: 1, loadjs: 1, html: 1, endhtml: 1 };
 
+  // ---------------------------------------------------------------------------------------------
+  // Clock. Plugins with their own transitions (e.g. rule-image wipes drawn on a canvas every
+  // animation frame) keep their state in closures the patch cannot reach, but they time
+  // themselves with the clock. Skipping such a transition advances the page's clock instead:
+  // Date.now(), getTime()/valueOf() of dates created afterwards, performance.now() and
+  // animation-frame timestamps move forward together (never backwards), so time-based animations
+  // complete on their next frame. Wall-clock fields (getHours(), toString() ... e.g. save dates)
+  // are unaffected.
+  // ---------------------------------------------------------------------------------------------
+
+  var timeWarp = 0;
+  var lastFrameRequest = -1e9; // last requestAnimationFrame call by game code
+  var NativeDate = W.Date;
+  var nativeGetTime = NativeDate.prototype.getTime;
+  var nativeValueOf = NativeDate.prototype.valueOf;
+  var nativeDateNow = NativeDate.now || function () { return nativeGetTime.call(new NativeDate()); };
+  var perf = W.performance;
+  var nativePerfNow = perf && perf.now ? perf.now.bind(perf) : null;
+
   function now() {
-    return W.performance && performance.now ? performance.now() : new Date().getTime();
+    return nativePerfNow ? nativePerfNow() : nativeDateNow.call(NativeDate);
+  }
+
+  (function installClock() {
+    function PatchedDate(a, b, c, d, e, f, g) {
+      if (!(this instanceof PatchedDate)) return NativeDate(); // Date() without new: a string
+      switch (arguments.length) {
+        case 0:
+          var dt = new NativeDate();
+          if (timeWarp) {
+            try { Object.defineProperty(dt, '__tpWarp', { value: timeWarp }); } catch (err) { dt.__tpWarp = timeWarp; }
+          }
+          return dt;
+        case 1: return new NativeDate(a);
+        case 2: return new NativeDate(a, b);
+        case 3: return new NativeDate(a, b, c);
+        case 4: return new NativeDate(a, b, c, d);
+        case 5: return new NativeDate(a, b, c, d, e);
+        case 6: return new NativeDate(a, b, c, d, e, f);
+        default: return new NativeDate(a, b, c, d, e, f, g);
+      }
+    }
+    PatchedDate.prototype = NativeDate.prototype;
+    PatchedDate.now = function () { return nativeDateNow.call(NativeDate) + timeWarp; };
+    PatchedDate.parse = NativeDate.parse;
+    PatchedDate.UTC = NativeDate.UTC;
+    NativeDate.now = PatchedDate.now;
+    NativeDate.prototype.getTime = function () { return nativeGetTime.call(this) + (this.__tpWarp || 0); };
+    NativeDate.prototype.valueOf = function () { return nativeValueOf.call(this) + (this.__tpWarp || 0); };
+    W.Date = PatchedDate;
+    if (nativePerfNow) {
+      try { perf.now = function () { return nativePerfNow() + timeWarp; }; } catch (err) {}
+    }
+    if (nativeRaf) {
+      W.requestAnimationFrame = function (cb) {
+        lastFrameRequest = now();
+        return nativeRaf(function (t) { cb(t + timeWarp); });
+      };
+    }
+  })();
+
+  // Something drives an animation every frame right now (jQuery, a plugin's canvas wipe ...).
+  function frameLoopActive() {
+    return now() - lastFrameRequest < 100;
+  }
+
+  function advanceClock() {
+    timeWarp += 30000;
+    P.stats.clockSkips++;
   }
 
   function log() {
@@ -489,12 +556,33 @@
   // Transition skip (input)
   // ---------------------------------------------------------------------------------------------
 
+  // Tags during which the engine waits for a click on its click layer (all engine versions).
+  var CLICK_WAIT_TAGS = { l: 1, p: 1, text: 1 };
+
+  function waitingForClick() {
+    return clickLayerVisible() &&
+      !!(kag.stat.is_adding_text || kag.stat.is_hide_message || CLICK_WAIT_TAGS[currentTagName()]);
+  }
+
+  // Returns true when the click was used up and must not reach the game.
   function tryTransitionSkip() {
-    if (!CFG.transitionSkip || !kag) return false;
-    if (clickLayerVisible() || !engineBusy()) return false;
-    if (!flush()) return false;
-    P.stats.flushes++;
-    return true;
+    if (!CFG.transitionSkip || !kag || !engineBusy() || waitingForClick()) return false;
+    if (clickLayerVisible()) {
+      // Click layer shown on some other tag: typically a plugin's own transition that blocks the
+      // engine meanwhile (e.g. [bg_rule]). Finish it through the clock, and still let the click
+      // through in case the tag is really waiting for it.
+      if (frameLoopActive()) advanceClock();
+      return false;
+    }
+    if (flush()) {
+      P.stats.flushes++;
+      return true;
+    }
+    if (frameLoopActive()) {
+      advanceClock();
+      return true;
+    }
+    return false;
   }
 
   function onMouseDown(e) {
