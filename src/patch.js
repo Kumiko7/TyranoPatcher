@@ -27,7 +27,7 @@
   if (CFG.rollbackMouseBack === undefined) CFG.rollbackMouseBack = true;
   if (!(CFG.rollbackHistory > 0)) CFG.rollbackHistory = 300;
 
-  var P = W.__tyranoPatcher = { version: '1.1.0', config: CFG, stats: { flushes: 0, skipFlushes: 0, rollbacks: 0 } };
+  var P = W.__tyranoPatcher = { version: '1.1.1', config: CFG, stats: { flushes: 0, skipFlushes: 0, rollbacks: 0 } };
 
   var nativeSetTimeout = W.setTimeout;
   var nativeClearTimeout = W.clearTimeout;
@@ -260,6 +260,11 @@
     if (bgm && typeof bgm.start === 'function' && !bgm.start.__tyranoPatcher) {
       var origBgmStart = bgm.start;
       bgm.start = function (pm) {
+        if (pm && alreadyPlayingAfterRollback(pm)) {
+          // The game's on-load hook (make.ks) re-issued a loop that never stopped; don't restart it.
+          if (String(pm.stop) !== 'true') kag.ftag.nextOrder();
+          return undefined;
+        }
         if (!(CFG.fastSkip && CFG.skipSoundEffects && isSkipping() && pm && pm.target === 'se' &&
           String(pm.loop) !== 'true')) {
           return origBgmStart.apply(this, arguments);
@@ -673,6 +678,25 @@
       })(tag);
     }
 
+    // Some games' loaders stop every sound up front (e.g. a custom [stop_sounds]) regardless of
+    // the "keep the music" option. While a rollback is loading: never let those stops advance
+    // the engine, and when the music stays the same, only let voices be stopped.
+    var stopbgm = mt.stopbgm;
+    if (stopbgm && typeof stopbgm.start === 'function' && !stopbgm.start.__tyranoPatcher) {
+      var origStop = stopbgm.start;
+      stopbgm.start = function (pm) {
+        if (ourLoad && restored && pm) {
+          if (restored.keepAudio && String(pm.target || 'bgm') !== 'voice') return undefined;
+          var copy = {};
+          for (var key in pm) copy[key] = pm[key];
+          copy.stop = 'true';
+          return origStop.call(this, copy);
+        }
+        return origStop.apply(this, arguments);
+      };
+      stopbgm.start.__tyranoPatcher = true;
+    }
+
     var menu = kag.menu;
     if (menu && typeof menu.loadGameData === 'function' && !menu.loadGameData.__tyranoPatcher) {
       var origLoad = menu.loadGameData;
@@ -728,6 +752,22 @@
     }
   }
 
+  // True when a rollback that keeps the music is still loading and pm asks for a loop that is
+  // already playing on the same channel.
+  function alreadyPlayingAfterRollback(pm) {
+    if (!restored || restored.rested || !restored.keepAudio) return false;
+    if (String(pm.loop) !== 'true' || !pm.storage) return false;
+    var map = pm.target === 'se' ? kag.tmp.map_se : pm.target === 'voice' ? null : kag.tmp.map_bgm;
+    var howl = map && map[pm.buf === undefined ? '0' : pm.buf];
+    if (!howl || typeof howl.playing !== 'function') return false;
+    try {
+      var src = String(howl._src || '');
+      return howl.playing() && src.slice(-String(pm.storage).length - 1) === '/' + pm.storage;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function sameAudio(a, b) {
     try {
       return a.current_bgm === b.current_bgm && a.current_bgm_vol === b.current_bgm_vol &&
@@ -762,9 +802,11 @@
       for (var i = 0; i < entry.backlog.length; i++) bl.push(entry.backlog[i]);
     }
 
-    restored = { entry: entry, rested: false, guardUntil: 0, started: now() };
-    // Keep the music playing if it is the same; otherwise the loader restarts the right one.
-    var options = { bgm_over: sameAudio(entry.data.stat, kag.stat) ? 'true' : 'false' };
+    // Keep the music playing if it is the same (this includes one-shot sounds still ringing out,
+    // e.g. a jingle); otherwise the loader stops everything and restarts the line's music.
+    var keepAudio = sameAudio(entry.data.stat, kag.stat);
+    restored = { entry: entry, rested: false, guardUntil: 0, started: now(), keepAudio: keepAudio };
+    var options = { bgm_over: keepAudio ? 'true' : 'false' };
     var timersBefore = jqueryTimers();
     ourLoad = true;
     depth++;
