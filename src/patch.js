@@ -664,14 +664,13 @@
         tag.start = function () {
           var index = kag.ftag.current_order_index;
           var scenario = kag.stat.current_scenario;
-          waitingAt = null;
-          // While skipping the engine moves on from inside this call, so record it right here.
-          if (CFG.rollback && isSkipping()) recordLine();
+          // Set before running the tag: while skipping, the tag moves on from inside this call, and
+          // the line has to be recorded at that moment (after the tag set e.g. its page-clear flag),
+          // not before the tag ran.
+          waitingAt = { index: index, scenario: scenario };
           var r = orig.apply(this, arguments);
-          // Still on this tag afterwards => the engine is now waiting for the player.
-          if (kag.ftag.current_order_index === index && kag.stat.current_scenario === scenario) {
-            waitingAt = { index: index, scenario: scenario };
-          }
+          // Moved on already (skip / auto): it was recorded by beforeNextOrder.
+          if (kag.ftag.current_order_index !== index || kag.stat.current_scenario !== scenario) waitingAt = null;
           return r;
         };
         tag.start.__tyranoPatcher = true;
