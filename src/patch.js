@@ -26,8 +26,9 @@
   if (CFG.rollbackKeys === undefined) CFG.rollbackKeys = 'Backspace, PageUp';
   if (CFG.rollbackMouseBack === undefined) CFG.rollbackMouseBack = true;
   if (!(CFG.rollbackHistory > 0)) CFG.rollbackHistory = 300;
+  if (CFG.staleGuard === undefined) CFG.staleGuard = true;
 
-  var P = W.__tyranoPatcher = { version: '1.1.1', config: CFG, stats: { flushes: 0, skipFlushes: 0, rollbacks: 0, clockSkips: 0 } };
+  var P = W.__tyranoPatcher = { version: '1.1.2', config: CFG, stats: { flushes: 0, skipFlushes: 0, rollbacks: 0, clockSkips: 0, staleBlocked: 0 }, staleLog: [] };
 
   var nativeSetTimeout = W.setTimeout;
   var nativeClearTimeout = W.clearTimeout;
@@ -44,6 +45,9 @@
   var swallowClickUntil = 0;
   var frozen = false;    // engine progression blocked while a rollback tears down the old state
   var generation = 0;    // bumped on rollback; async callbacks from an older generation are dropped
+  var jumpCount = 0;     // bumped whenever the engine jumps (call/return/jump/load ...)
+  var cbOwner = null;    // position of the tag whose continuation callback is running right now
+  var crossTagDepth = 0; // > 0 inside engine helpers that legitimately resume a later wait tag
 
   // Tags that run user JavaScript; timers they create are the game's own business.
   var SCRIPT_TAGS = { iscript: 1, endscript: 1, eval: 1, emb: 1, loadjs: 1, html: 1, endhtml: 1 };
@@ -105,6 +109,17 @@
       W.requestAnimationFrame = function (cb) {
         lastFrameRequest = now();
         return nativeRaf(function (t) { cb(t + timeWarp); });
+      };
+    }
+    // Plugins may have kept a reference to the original requestAnimationFrame (when they load
+    // before the patch is injected); canvas drawing is looked up on the prototype at call time,
+    // so it reliably reveals canvas-based transitions (e.g. rule-image wipes) drawing every frame.
+    var C2D = W.CanvasRenderingContext2D && W.CanvasRenderingContext2D.prototype;
+    if (C2D && typeof C2D.drawImage === 'function') {
+      var nativeDrawImage = C2D.drawImage;
+      C2D.drawImage = function () {
+        lastFrameRequest = now();
+        return nativeDrawImage.apply(this, arguments);
       };
     }
   })();
@@ -181,7 +196,7 @@
   }
 
   W.setTimeout = function (fn, delay) {
-    if (depth === 0 || !kag || typeof fn !== 'function') return nativeSetTimeout.apply(W, arguments);
+    if ((depth === 0 && cbOwner === null) || !kag || typeof fn !== 'function') return nativeSetTimeout.apply(W, arguments);
     var tag = currentTagName();
     if (SCRIPT_TAGS[tag]) return nativeSetTimeout.apply(W, arguments);
 
@@ -190,17 +205,17 @@
     var fast = CFG.fastSkip && isSkipping();
     if (fast) ms = 0;
 
-    var rec = { fn: fn, args: args, tag: tag, id: null };
+    var rec = { fn: fn, args: args, tag: tag, id: null, owner: ownerForNew() };
     // Text is typed through a chain of timers that ends by advancing the engine. Keep tracking
     // that chain so a rollback can cancel it. (Other chains, e.g. looping frame animations, are
     // deliberately not followed.)
     var propagate = tag === 'text';
     var run = function () {
       if (!removeTimer(rec)) return; // cleared or already fired by flush()
-      if (!propagate) return fn.apply(W, args);
+      if (!propagate) return withOwner(rec.owner, fn, W, args);
       depth++;
       try {
-        fn.apply(W, args);
+        withOwner(rec.owner, fn, W, args);
       } finally {
         depth--;
       }
@@ -232,6 +247,100 @@
     try { saveSystemVariableOrig.call(kag); } catch (e) { log('save error', e); }
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Stale continuations. Every callback that may continue the script (engine timers, jQuery
+  // animation callbacks, animationend / transitionend handlers) remembers the script position of
+  // the tag that created it. If it tries to advance the script after the script already moved on
+  // from that tag, it is a duplicate continuation and is ignored. Without this, races in the
+  // engine (e.g. [chara_mod] firing its completion once per image when started while the
+  // previous [chara_mod] of the same character is still fading) advance the script twice, which
+  // skips waits - and while skipping can run [free_filter] before [filter] finished, leaving the
+  // screen grey.
+  // ---------------------------------------------------------------------------------------------
+
+  function positionKey() {
+    return kag.stat.current_scenario + '#' + kag.ftag.current_order_index + '#' + jumpCount;
+  }
+
+  function ownerForNew() {
+    if (cbOwner !== null) return cbOwner; // created inside a continuation: same owner
+    return depth > 0 && kag && kag.ftag && kag.stat ? positionKey() : null;
+  }
+
+  function withOwner(owner, fn, self, args) {
+    if (owner === null || owner === undefined) return fn.apply(self, args);
+    var prev = cbOwner;
+    cbOwner = owner;
+    try {
+      return fn.apply(self, args);
+    } finally {
+      cbOwner = prev;
+    }
+  }
+
+  function countJump() {
+    jumpCount++;
+  }
+
+  function isStaleContinuation() {
+    if (!CFG.staleGuard || cbOwner === null || crossTagDepth > 0) return false;
+    if (cbOwner === positionKey()) return false;
+    // Wait tags ([wa], [wt], [wait_camera], [wse] ...) are meant to be resumed by earlier tags.
+    if (/^w/.test(currentTagName())) return false;
+    return true;
+  }
+
+  function wrapCrossTag(obj, name) {
+    var orig = obj && obj[name];
+    if (typeof orig !== 'function' || orig.__tyranoPatcherCross) return;
+    var w = function () {
+      crossTagDepth++;
+      depth++;
+      try {
+        return orig.apply(this, arguments);
+      } finally {
+        depth--;
+        crossTagDepth--;
+      }
+    };
+    w.__tyranoPatcherCross = true;
+    w.__tyranoPatcher = true;
+    obj[name] = w;
+  }
+
+  // Give jQuery animation callbacks and animation/transition end handlers an owner.
+  function hookJquery(q) {
+    if (!q || q.__tyranoPatcherHooked) return;
+    q.__tyranoPatcherHooked = true;
+    var origSpeed = q.speed;
+    if (typeof origSpeed === 'function') {
+      q.speed = function () {
+        var opt = origSpeed.apply(this, arguments);
+        var owner = ownerForNew();
+        if (owner !== null && opt && typeof opt.old === 'function') {
+          var cb = opt.old;
+          opt.old = function () { return withOwner(owner, cb, this, arguments); };
+        }
+        return opt;
+      };
+    }
+    var ev = q.event;
+    if (ev && typeof ev.add === 'function') {
+      var origAdd = ev.add;
+      ev.add = function (elem, types, handler, data, selector) {
+        if (typeof handler === 'function' && typeof types === 'string' && /animationend|transitionend/i.test(types)) {
+          var owner = ownerForNew();
+          if (owner !== null) {
+            var h = handler;
+            handler = function () { return withOwner(owner, h, this, arguments); };
+            handler.guid = h.guid || (h.guid = q.guid++); // keeps .off(types, h) working
+          }
+        }
+        return origAdd.call(this, elem, types, handler, data, selector);
+      };
+    }
+  }
+
   function inEngine(fn) {
     return function () {
       depth++;
@@ -250,11 +359,14 @@
     var w = function () {
       if (frozen) return false;
       if (before && before.apply(this, arguments) === false) return false;
+      var prevOwner = cbOwner;
+      cbOwner = null; // callbacks created by the tags run from here belong to those tags
       depth++;
       try {
         return orig.apply(this, arguments);
       } finally {
         depth--;
+        cbOwner = prevOwner;
         if (after) after.apply(this, arguments);
       }
     };
@@ -264,10 +376,17 @@
 
   function wrapEngine() {
     var f = kag.ftag;
-    var names = ['nextOrderWithLabel', 'nextOrderWithTag', 'startTag', 'buildTag', 'buildTagIndex', 'completeTrans'];
-    for (var i = 0; i < names.length; i++) wrapMethod(f, names[i]);
+    var jumps = ['nextOrderWithLabel', 'buildTag', 'buildTagIndex'];
+    for (var i = 0; i < jumps.length; i++) wrapMethod(f, jumps[i], countJump);
+    wrapMethod(f, 'nextOrderWithTag');
+    wrapMethod(f, 'startTag');
     wrapMethod(f, 'nextOrder', beforeNextOrder);
-    wrapMethod(f, 'nextOrderWithIndex', null, checkRestored);
+    wrapMethod(f, 'nextOrderWithIndex', countJump, checkRestored);
+    // [wt] and [wa] are resumed through these from callbacks of earlier tags ([trans], [anim] ...).
+    wrapCrossTag(f, 'completeTrans');
+    wrapCrossTag(kag, 'popAnimStack');
+    var qs = jQueries();
+    for (var q = 0; q < qs.length; q++) hookJquery(qs[q]);
     wrapRollbackHooks(f);
 
     // Callbacks of image preloads continue tag execution (bg, chara_show, chara_mod ...).
@@ -276,13 +395,14 @@
       kag.preload = function () {
         var args = slice.call(arguments);
         var gen = generation;
+        var owner = ownerForNew(); // the tag asking for the image owns what its callback does
         for (var j = 0; j < args.length; j++) {
           if (typeof args[j] !== 'function') continue;
           args[j] = (function (cb) {
             var wrapped = inEngine(cb);
             return function () {
               if (gen !== generation) return undefined; // the tag that asked for it was rolled back
-              return wrapped.apply(this, arguments);
+              return withOwner(owner, wrapped, this, arguments);
             };
           })(args[j]);
         }
@@ -486,7 +606,7 @@
           var rec = snapTimers[i];
           if (!removeTimer(rec)) continue; // already fired / cleared by an earlier callback
           if (!rec.fake) nativeClearTimeout(rec.id);
-          try { rec.fn.apply(W, rec.args); } catch (e) { log('timer error', e); }
+          try { withOwner(rec.owner, rec.fn, W, rec.args); } catch (e) { log('timer error', e); }
         }
       } finally {
         depth--;
@@ -715,6 +835,12 @@
 
   // ftag.nextOrder hook: the engine is about to move on.
   function beforeNextOrder() {
+    if (isStaleContinuation()) {
+      P.stats.staleBlocked++;
+      P.staleLog.push(cbOwner + ' -> ' + positionKey() + ' (' + currentTagName() + ')');
+      if (P.staleLog.length > 50) P.staleLog.shift();
+      return false;
+    }
     if (restored && restored.rested) {
       if (atRestedPosition()) {
         // Right after a rollback, ignore stray async callbacks of the discarded state (e.g. an

@@ -7,7 +7,7 @@
     <Nullable>disable</Nullable>
     <AssemblyName>TyranoPatcher</AssemblyName>
     <RootNamespace>TyranoPatcher</RootNamespace>
-    <Version>1.1.1</Version>
+    <Version>1.1.2</Version>
     <Product>TyranoPatcher</Product>
     <Description>Launches TyranoScript games with transition skip and fast skip patches.</Description>
     <ApplicationManifest>app.manifest</ApplicationManifest>

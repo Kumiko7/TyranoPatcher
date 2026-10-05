@@ -102,8 +102,9 @@ namespace TyranoPatcher
             Process proc = Process.Start(psi);
 
             string script = BuildScript(settings);
-            var attached = new HashSet<string>();
-            var sessions = new List<Task>();
+            // One DevTools session per page target; a session whose connection dropped (the
+            // target still being listed) is opened again so the patch keeps being applied.
+            var sessions = new Dictionary<string, Task>();
             var started = Stopwatch.StartNew();
             bool everConnected = false;
 
@@ -121,9 +122,9 @@ namespace TyranoPatcher
                         string url = Str(t, "url") ?? "";
                         if (id == null || ws == null || type != "page" || url.StartsWith("devtools:")) continue;
                         if (url.EndsWith("_generated_background_page.html")) continue; // NW.js internals
-                        if (!attached.Add(id)) continue;
-                        Log("attaching to " + url);
-                        sessions.Add(Task.Run(() => new CdpSession(ws, script).RunAsync()));
+                        if (sessions.TryGetValue(id, out var running) && !running.IsCompleted) continue;
+                        Log((sessions.ContainsKey(id) ? "re-attaching to " : "attaching to ") + url);
+                        sessions[id] = Task.Run(() => new CdpSession(ws, script).RunAsync());
                     }
                 }
                 else if (proc.HasExited)
@@ -144,7 +145,7 @@ namespace TyranoPatcher
                     ShowError("Could not connect to the game. It may not be a TyranoScript (Electron / NW.js) game.");
                     return 4;
                 }
-                await Task.Delay(attached.Count == 0 ? 200 : 2000).ConfigureAwait(false);
+                await Task.Delay(sessions.Count == 0 ? 200 : 2000).ConfigureAwait(false);
             }
             Log("game closed");
             return 0;
