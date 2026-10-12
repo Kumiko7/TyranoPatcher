@@ -168,6 +168,7 @@ namespace TyranoPatcher
                 { "rollbackKeys", s.RollbackKeys },
                 { "rollbackMouseBack", s.RollbackMouseBack },
                 { "rollbackHistory", s.RollbackHistory },
+                { "blockWinKey", s.BlockWinKey },
             };
             return "window.__tyranoPatcherConfig = window.__tyranoPatcherConfig || " + Json.Serialize(config) + ";\n" + patch;
         }
@@ -254,6 +255,7 @@ namespace TyranoPatcher
         public bool Rollback = true;
         public string RollbackKeys = "Backspace, PageUp";
         public bool RollbackMouseBack = true;
+        public bool BlockWinKey = true;
         public int RollbackHistory = 300;
 
         // Optional TyranoPatcher.ini next to the launcher, "key = value" lines, ';' or '#' comments.
@@ -280,6 +282,7 @@ namespace TyranoPatcher
                     case "rollback": s.Rollback = Bool(val, true); break;
                     case "rollback_keys": s.RollbackKeys = val; break;
                     case "rollback_mouse_back": s.RollbackMouseBack = Bool(val, true); break;
+                    case "block_win_key": s.BlockWinKey = Bool(val, true); break;
                     case "rollback_history":
                         if (int.TryParse(val, out var n) && n > 0) s.RollbackHistory = n;
                         break;

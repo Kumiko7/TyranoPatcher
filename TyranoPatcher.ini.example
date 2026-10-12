@@ -26,6 +26,10 @@ rollback_mouse_back = 1
 ; How many lines back you can go.
 rollback_history = 300
 
+; Ignore the Windows key in the game. Many games bind it to skip (it is Command on Mac), so
+; pressing it to open the Start menu would start skipping.
+block_win_key = 1
+
 ; Show the small "TyranoPatcher ... active" note in the corner for a few seconds at startup.
 toast = 1
 

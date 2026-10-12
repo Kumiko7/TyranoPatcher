@@ -10,6 +10,7 @@
  *    ~0ms instead of playing out (or being cut to 70ms per effect).
  *  - Rollback: a hotkey (Backspace / PageUp / mouse back button by default) returns to the state
  *    of the previous line of text; press repeatedly to go further back.
+ *  - Windows key: kept away from the game, whose stock key config binds it (Command on Mac) to skip.
  */
 (function () {
   'use strict';
@@ -27,8 +28,9 @@
   if (CFG.rollbackMouseBack === undefined) CFG.rollbackMouseBack = true;
   if (!(CFG.rollbackHistory > 0)) CFG.rollbackHistory = 300;
   if (CFG.staleGuard === undefined) CFG.staleGuard = true;
+  if (CFG.blockWinKey === undefined) CFG.blockWinKey = true;
 
-  var P = W.__tyranoPatcher = { version: '1.1.2', config: CFG, stats: { flushes: 0, skipFlushes: 0, rollbacks: 0, clockSkips: 0, staleBlocked: 0 }, staleLog: [] };
+  var P = W.__tyranoPatcher = { version: '1.1.3', config: CFG, stats: { flushes: 0, skipFlushes: 0, rollbacks: 0, clockSkips: 0, staleBlocked: 0 }, staleLog: [] };
 
   var nativeSetTimeout = W.setTimeout;
   var nativeClearTimeout = W.clearTimeout;
@@ -738,6 +740,17 @@
   W.addEventListener('keydown', onKeyDown, true);
   W.addEventListener('beforeunload', function () { flushSystemVariables(); }, true);
 
+  // The stock KeyConfig.js binds key code 91 (Command on Mac) to skip, which on Windows is the
+  // Windows key: opening the Start menu starts skipping, and since the game loses focus the keyup
+  // that ends it never arrives. Keep the Windows keys away from the game's key bindings (their
+  // keyup still goes through, which only ends skipping).
+  function onWinKey(e) {
+    if (!CFG.blockWinKey) return;
+    if (e.keyCode !== 91 && e.keyCode !== 92 && e.key !== 'Meta' && e.key !== 'OS') return;
+    e.stopImmediatePropagation();
+  }
+  W.addEventListener('keydown', onWinKey, true);
+
   // ---------------------------------------------------------------------------------------------
   // Rollback
   //
@@ -1132,7 +1145,8 @@
       toastEl = document.createElement('div');
       toastEl.id = '__tyranoPatcherToast';
       toastEl.style.cssText = 'position:fixed;left:8px;top:8px;z-index:2147483647;pointer-events:none;' +
-        'font:12px/1.4 sans-serif;color:#fff;background:rgba(0,0,0,.65);padding:4px 8px;border-radius:4px';
+        'font:12px/1.4 sans-serif;color:#fff;background:rgba(0,0,0,.65);padding:4px 8px;border-radius:4px;' +
+        'white-space:pre-line';
     }
     if (!toastEl.parentNode) document.body.appendChild(toastEl);
     toastEl.textContent = text;
@@ -1153,9 +1167,17 @@
 
   function startupToast() {
     if (!CFG.toast) return;
-    var features = [CFG.transitionSkip ? 'transition skip' : '', CFG.fastSkip ? 'fast skip' : '',
-      CFG.rollback ? 'rollback' : ''].filter(Boolean);
-    showToast('TyranoPatcher: ' + features.join(' + ') + ' active', 2500);
+    var lines = [];
+    if (CFG.transitionSkip) lines.push('Transition skip (click / Enter)');
+    if (CFG.fastSkip) lines.push('Fast skip' + (CFG.skipSoundEffects ? ', no sound effects while skipping' : ''));
+    if (CFG.rollback) {
+      var keys = CFG.rollbackKeys ? String(CFG.rollbackKeys).split(/[,;\s]+/).filter(Boolean) : [];
+      if (CFG.rollbackMouseBack) keys.push('mouse back');
+      lines.push('Rollback' + (keys.length ? ' (' + keys.join(' / ') + ')' : ''));
+    }
+    if (CFG.blockWinKey) lines.push('Windows key does not skip');
+    showToast('TyranoPatcher ' + P.version + (lines.length ? ':\n• ' + lines.join('\n• ') : ': no patches enabled'),
+      2500 + 500 * lines.length);
   }
 
   var waited = 0;

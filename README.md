@@ -14,14 +14,17 @@ Launches a TyranoScript visual novel with these improvements, without modifying 
   restored. Press it repeatedly to keep going back (up to 300 lines). Pressed during a transition
   or while a line is still typing, it returns to the last complete line. Clicking afterwards plays
   on normally, including any choices you make differently.
+- **No Windows-key skip**: many games bind the Mac Command key to skip, which is the **Windows**
+  key on a PC, so opening the Start menu started skipping (and often kept skipping, since the game
+  never saw the key being released). The game now ignores the Windows key.
 
 ## Usage
 
 1. Copy `TyranoPatcher.exe` into the game's folder (next to the game's `.exe`).
 2. Run `TyranoPatcher.exe` instead of the game.
 
-You can also drag the game's `.exe` onto `TyranoPatcher.exe`. A short
-"TyranoPatcher: ... active" note appears in the top-left corner when the patch is applied.
+You can also drag the game's `.exe` onto `TyranoPatcher.exe`. When the patch is applied, a note
+in the top-left corner lists the active patches for a few seconds.
 
 Optional settings: copy `TyranoPatcher.ini.example` to `TyranoPatcher.ini` next to the exe.
 
@@ -53,9 +56,41 @@ e.g. on "back to title". It exits when the game closes. A log is written to
 - A click is only treated as a transition skip when the engine is not waiting for input: not at
   `[s]` (choices/buttons), not in a menu, not on a button or link, and not while a text line is
   typing or waiting for a click (the game handles those clicks as usual).
+- Windows key: the stock `KeyConfig.js` of v4.x/v5.0x maps key code 91 (Mac Command = Windows key)
+  to `skip`, and the engine only stops on that key's keyup. Its keydown is stopped in the capture
+  phase before the engine sees it; the keyup is let through. v5.20+ engines already drop that
+  binding on Windows, so there it changes nothing.
 
-Tested with TyranoScript v5.00 (TrashxTALK, Electron 7), v5.20 (Within a Gentle Cage, Electron 24)
-and the v4.50 engine that ships with TyranoBuilder 1.80 (NW.js 0.12 / Chrome 41).
+Tested with TyranoScript v5.00 (TrashxTALK, nisekoi; Electron 7), v5.20 (Within a Gentle Cage,
+アルスミック・リズィ; Electron 24) and the v4.50 engine that ships with TyranoBuilder 1.80
+(NW.js 0.12 / Chrome 41).
+
+## Testing
+
+The player's saves must never be touched, and they may be playing a game while you test. The
+scripts in `tools\` handle that:
+
+```
+powershell -File tools\test-start.ps1 -Game <game folder>
+node tools\cdp.mjs <port> eval "__tyranoPatcher.version"
+powershell -File tools\test-stop.ps1 -Game <game folder>
+```
+
+- `test-start.ps1` mirrors the game to `%TEMP%\TyranoPatcherTest\<game>` without `*.sav` files,
+  copies in `build\TyranoPatcher.exe`, backs up the game's Local Storage (shared with the copy),
+  starts it and prints the DevTools port (from the copy's own process, not from the log).
+- `test-stop.ps1` stops only processes running from the copy and restores that backup (skipped if
+  another instance of the game is running).
+- `cdp.mjs <port>` drives the game: `eval <js>`, `key <keyCode> [nokeyup]`, `click <x> <y>`,
+  `shot <file.png>`, `console [seconds]`. Key and mouse input is real input, which page-created
+  events are not.
+- `asar-pick.mjs <app.asar> <outDir|-> <regex>` extracts single files (e.g. `KeyConfig.js`,
+  `kag.key_mouse.js`) from a game.
+
+Tips: a fresh copy has no read-text history, so skip stops at once on unread text; set
+`TYRANO.kag.config.unReadTextSkip="true"` in the copy to test skipping. Some games turn key
+bindings off on title screens (`TYRANO.kag.stat.enable_keyconfig`). The patch's settings can be
+changed live through `__tyranoPatcher.config`.
 
 Note: while a game runs through the patcher, its DevTools port is reachable by other programs on
 this PC (localhost only), as with any Chromium app started with remote debugging.
